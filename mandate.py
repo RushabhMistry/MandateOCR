@@ -3,6 +3,10 @@ import os
 import base64
 from fastapi.middleware.cors import CORSMiddleware
 
+# Ensure 'static' and 'temp' folders exist
+os.makedirs("static", exist_ok=True)
+os.makedirs("temp", exist_ok=True)
+
 # Get base64-encoded credentials from the environment variable
 encoded_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_B64")
 
@@ -139,8 +143,6 @@ def extract_text_with_google_vision(image_path):
 async def process_cheque(file: UploadFile = File(...)):
     try:
         file_location = f"temp/{file.filename}"
-        os.makedirs("temp", exist_ok=True)
-        os.makedirs("static", exist_ok=True)
         with open(file_location, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
