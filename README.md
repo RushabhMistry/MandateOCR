@@ -1,0 +1,2 @@
+# MandateOCR
+MandateOCR prototype
