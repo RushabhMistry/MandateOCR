@@ -1,154 +1,109 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse, FileResponse
+import cv2
+import numpy as np
+import json
+import re
 import os
 import base64
-from fastapi.middleware.cors import CORSMiddleware
+from google.cloud import vision
+from google.oauth2 import service_account
 
-# Ensure 'static' and 'temp' folders exist
-os.makedirs("static", exist_ok=True)
-os.makedirs("temp", exist_ok=True)
+# ✅ FastAPI Initialization
+app = FastAPI()
 
-# Get base64-encoded credentials from the environment variable
+# ✅ Google Vision API Initialization
 encoded_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_B64")
 
 if encoded_credentials:
-    # Decode and save as a JSON file
-    with open("client_file_mandateocr1.json", "wb") as f:
-        f.write(base64.b64decode(encoded_credentials))
-
-    # Set the path to GOOGLE_APPLICATION_CREDENTIALS
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "client_file_mandateocr1.json"
+    credentials_info = json.loads(base64.b64decode(encoded_credentials).decode("utf-8"))
+    credentials = service_account.Credentials.from_service_account_info(credentials_info)
+    vision_client = vision.ImageAnnotatorClient(credentials=credentials)
 else:
     raise EnvironmentError("GOOGLE_APPLICATION_CREDENTIALS_B64 environment variable is not set")
 
-from google.cloud import vision
-import cv2
-import json
-import numpy as np
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-import shutil
-
-app = FastAPI()
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow requests from any origin
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
-
-# Serve static files for images
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Define ROIs with coordinates: (x1, y1, x2, y2)
+# ✅ Updated ROIs
 rois = {
-    "Account_Number": (35, 100, 380, 130),
-    "Account_Name": (430, 60, 980, 130),
-    "Check_Number": (1390, 70, 1650, 100),
-    "BRSTN_Number": (1750, 60, 1880, 130),
-    "Date": {
-        "M1": (1585, 165, 1625, 220),
-        "M2": (1625, 165, 1665, 220),
-        "D1": (1665, 165, 1705, 220),
-        "D2": (1705, 165, 1745, 220),
-        "Y1": (1745, 165, 1785, 220),
-        "Y2": (1785, 165, 1825, 220),
-        "Y3": (1825, 165, 1865, 220),
-        "Y4": (1865, 165, 1905, 220),
-    },
-    "Payee_Name": (310, 280, 1350, 380),
-    "Amount_In_Digits": (1440, 280, 1905, 380),
-    "Amount_In_Words": (200, 390, 1905, 470),
-    "Signature_1": (1500, 550, 1905, 690),
-    "Signature_2": (1030, 550, 1440, 690),
-    "MICR_Code": (470, 790, 725, 850),
-    "Bank_Name": (130, 510, 400, 570),
-    "Branch_Name": (40, 595, 400, 635),
+    "UMRN_Number": (480, 70, 1455, 132),
+    "Date1": (1515, 70, 1955, 132),
+    "Sponsor_bank_Code": (480, 132, 1045, 190),
+    "Utility_Code": (1195, 132, 1955, 190),
+    "I/We_Hereby_Authorize": (593, 192, 880, 230),
+    "Bank_A/C_Number": (460, 230, 1955, 285),
+    "With_Bank": (205, 293, 870, 339),
+    "IFSC_Code": (940, 285, 1460, 340),
+    "MICR_Code": (1570, 285, 1955, 340),
+    "Amount_in_Words": (335, 348, 1503, 403),
+    "Amount_in_Digits": (1560, 348, 1945, 403),
+    "Reference_1": (240, 460, 1070, 510),
+    "Phone_No": (1230, 450, 1800, 507),
+    "Reference_2": (240, 510, 1070, 550),
+    "Email_ID": (1220, 510, 1945, 550),
+    "Date_From": (150, 610, 520, 670),
+    "Date_To": (150, 680, 520, 740),
+    "Signature_1": (550, 600, 1000, 745),
+    "Name_1": (580, 755, 1005, 815),
+    "Signature_2": (1020, 600, 1470, 745),
+    "Name_2": (1055, 755, 1475, 815),
+    "Signature_3": (1490, 600, 1940, 745),
+    "Name_3": (1533, 755, 1945, 815),
 }
 
-# Initialize Google Vision client
-vision_client = vision.ImageAnnotatorClient()
-
-# Utility Functions
+# ✅ Post-Processing Functions
 def format_date(date_str):
+    date_str = re.sub(r'\D', '', date_str)
+    date_str = date_str[:8].rjust(8, '0')
     if len(date_str) == 8:
         return f"{date_str[:2]}/{date_str[2:4]}/{date_str[4:]}"
     return date_str
 
-def clean_text(text):
-    return text.replace("\n", " ").strip()
-
-def remove_background(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY)
-    return cv2.bitwise_and(image, image, mask=binary)
-
-def extract_text_with_google_vision(image_path):
-    image = cv2.imread(image_path)
-    if image is None:
-        raise FileNotFoundError(f"Image at path {image_path} could not be loaded.")
+# ✅ OCR and Signature Extraction
+async def process_image(file_bytes):
+    np_arr = np.frombuffer(file_bytes, np.uint8)
+    image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
     extracted_data = {}
     signature_info = []
 
-    for label, coordinates in rois.items():
-        if isinstance(coordinates, dict):
-            date_parts = []
-            for sub_label, (x1, y1, x2, y2) in coordinates.items():
-                roi = image[y1:y2, x1:x2]
-                _, encoded_image = cv2.imencode(".jpg", roi)
-                vision_image = vision.Image(content=encoded_image.tobytes())
-                response = vision_client.text_detection(image=vision_image)
-                texts = response.text_annotations
-                date_parts.append(texts[0].description.strip() if texts else "")
-            extracted_data[label] = format_date("".join(date_parts))
+    for label, (x1, y1, x2, y2) in rois.items():
+        roi = image[y1:y2, x1:x2]
+        _, encoded_image = cv2.imencode(".jpg", roi)
+        vision_image = vision.Image(content=encoded_image.tobytes())
+        response = vision_client.text_detection(image=vision_image)
+        texts = response.text_annotations
 
+        extracted_text = texts[0].description.strip() if texts else ""
+
+        if "Date" in label:
+            extracted_data[label] = format_date(extracted_text)
         elif "Signature" in label:
-            x1, y1, x2, y2 = coordinates
-            roi = image[y1:y2, x1:x2]
             gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             _, binary_roi = cv2.threshold(gray_roi, 128, 255, cv2.THRESH_BINARY_INV)
             signature_present = cv2.countNonZero(binary_roi) > 500
 
             if signature_present:
-                processed_signature = remove_background(roi)
-                signature_path = f"static/{label}.jpg"
-                cv2.imwrite(signature_path, processed_signature)
-                signature_info.append({
-                    "signature_label": label,
-                    "status": "Present",
-                    "coordinates": (x1, y1, x2, y2),
-                    "cropped_image": f"/static/{label}.jpg",
-                })
-            else:
-                signature_info.append({
-                    "signature_label": label,
-                    "status": "Not Present",
-                    "coordinates": (x1, y1, x2, y2),
-                })
+                signature_path = f"{label}.jpg"
+                cv2.imwrite(signature_path, roi)
+                signature_info.append(signature_path)
         else:
-            x1, y1, x2, y2 = coordinates
-            roi = image[y1:y2, x1:x2]
-            _, encoded_image = cv2.imencode(".jpg", roi)
-            vision_image = vision.Image(content=encoded_image.tobytes())
-            response = vision_client.text_detection(image=vision_image)
-            texts = response.text_annotations
-            extracted_data[label] = clean_text(texts[0].description if texts else "")
+            extracted_data[label] = extracted_text
 
-    return {"Extracted_Text": extracted_data, "Signatures": signature_info}
+    return extracted_data, signature_info
 
-@app.post("/process-cheque")
-async def process_cheque(file: UploadFile = File(...)):
-    try:
-        file_location = f"temp/{file.filename}"
-        with open(file_location, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+# ✅ API Endpoint
+@app.post("/extract")
+async def extract_data(file: UploadFile = File(...)):
+    file_bytes = await file.read()
+    extracted_data, signatures = await process_image(file_bytes)
 
-        result = extract_text_with_google_vision(file_location)
-        os.remove(file_location)
+    return JSONResponse({
+        "Extracted_Text": extracted_data,
+        "Signatures": signatures
+    })
 
-        return JSONResponse(content=result)
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+@app.get("/download-signature/{filename}")
+async def download_signature(filename: str):
+    file_path = f"./{filename}"
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    return JSONResponse({"error": "File not found"}, status_code=404)
