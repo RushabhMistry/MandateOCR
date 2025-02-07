@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 import cv2
 import numpy as np
 import json
@@ -11,6 +12,15 @@ from google.oauth2 import service_account
 
 # ✅ FastAPI Initialization
 app = FastAPI()
+
+# ✅ Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow requests from any origin
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 # ✅ Google Vision API Initialization
 encoded_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_B64")
