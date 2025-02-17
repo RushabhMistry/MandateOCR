@@ -1,0 +1,6 @@
+fastapi==0.95.2
+uvicorn==0.22.0
+google-cloud-vision==3.4.1
+python-multipart==0.0.6
+numpy==1.24.3
+opencv-python-headless==4.8.0.76
